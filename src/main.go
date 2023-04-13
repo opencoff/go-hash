@@ -1,6 +1,6 @@
 // main.go -- Tool to generate & verify various hashes
 //
-// (c) 2016 Sudhi Herle <sudhi@herle.net>
+// (c) 2023 Sudhi Herle <sudhi@herle.net>
 //
 // Licensing Terms: GPLv2
 //
@@ -15,9 +15,11 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path"
 
+	"github.com/opencoff/go-walk"
 	flag "github.com/opencoff/pflag"
 
 	"crypto/sha256"
@@ -29,11 +31,14 @@ import (
 	"hash"
 )
 
+// ghash output file magic
+const MAGIC = "#! ghash"
+
 // basename of argv[0]
 var Z string = path.Base(os.Args[0])
 
 func main() {
-	var ver, help, recurse, onefs, follow bool
+	var ver, help, recurse, onefs, follow, force bool
 	var verify, output, halgo string
 	var listHashes bool
 
@@ -44,6 +49,7 @@ func main() {
 	mf.BoolVarP(&onefs, "one-filesystem", "x", false, "Don't cross file system boundaries")
 	mf.BoolVarP(&follow, "follow-symlinks", "L", false, "Follow symlinks")
 	mf.BoolVarP(&listHashes, "list-hashes", "", false, "List supported hash algorithms")
+	mf.BoolVarP(&force, "force-overwrite", "f", false, "Forcibly overwrite output file")
 	mf.StringVarP(&halgo, "hash", "H", "sha256", "Use hash algorithm `H`")
 	mf.StringVarP(&verify, "verify-from", "v", "", "Verify the hashes in file 'F' [stdin]")
 	mf.StringVarP(&output, "output", "o", "", "Write hashes to file 'F' [stdout]")
@@ -68,11 +74,43 @@ func main() {
 		Die("Insufficient arguments. Try '%s -h'", Z)
 	}
 
-	_, ok := Hashes[halgo]
+	if len(verify) > 0 {
+		doVerify(verify)
+		os.Exit(0)
+	}
+
+	h, ok := Hashes[halgo]
 	if !ok {
 		Die("Unknown hash algorithm '%s'. Try '%s --list-hashes'", halgo, Z)
 	}
 
+	var fd io.WriteCloser = os.Stdout
+
+	if len(output) > 0 {
+		fx, err := NewSafeFile(output, force, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+		if err != nil {
+			Die("%s", err)
+		}
+		fd = fx
+
+		AtExit(fx.Abort)
+		defer fx.Abort()
+	}
+
+	fmt.Fprintf(fd, "%s %s %s\n", MAGIC, halgo, ProductVersion)
+	switch recurse {
+	case true:
+		opt := walk.Options{
+			FollowSymlinks: follow,
+			OneFS:          onefs,
+		}
+		processRecursive(args, h, fd, &opt)
+
+	case false:
+		processNormal(args, h, fd, follow)
+	}
+
+	fd.Close()
 	os.Exit(0)
 }
 
@@ -83,20 +121,37 @@ func printHashes() {
 	}
 }
 
-var _zeroes [64]byte
 var Hashes = map[string]func() hash.Hash{
-	"sha256":      func() hash.Hash { return sha256.New() },
-	"sha512":      func() hash.Hash { return sha512.New() },
-	"sha3":        func() hash.Hash { return sha3.New512() },
-	"sha3-256":    func() hash.Hash { return sha3.New256() },
-	"sha3-512":    func() hash.Hash { return sha3.New512() },
-	"blake2s":     func() hash.Hash { h, _ := blake2s.New256(_zeroes[:]); return h },
-	"blake2s-256": func() hash.Hash { h, _ := blake2s.New256(_zeroes[:]); return h },
-	"blake2b":     func() hash.Hash { h, _ := blake2b.New512(_zeroes[:]); return h },
-	"blake2b-256": func() hash.Hash { h, _ := blake2b.New256(_zeroes[:]); return h },
-	"blake2b-512": func() hash.Hash { h, _ := blake2b.New512(_zeroes[:]); return h },
-	"blake3":      func() hash.Hash { h, _ := blake3.NewKeyed(_zeroes[:]); return h },
-	"blake3-512":  func() hash.Hash { h, _ := blake3.NewKeyed(_zeroes[:]); return h },
+	"sha256":   func() hash.Hash { return sha256.New() },
+	"sha512":   func() hash.Hash { return sha512.New() },
+	"sha3":     func() hash.Hash { return sha3.New512() },
+	"sha3-256": func() hash.Hash { return sha3.New256() },
+	"sha3-512": func() hash.Hash { return sha3.New512() },
+	"blake2s":  func() hash.Hash { return keyedHashGen1(blake2s.New256) },
+
+	"blake2b":     func() hash.Hash { return keyedHashGen1(blake2b.New512) },
+	"blake2b-256": func() hash.Hash { return keyedHashGen1(blake2b.New256) },
+	"blake2b-512": func() hash.Hash { return keyedHashGen1(blake2b.New512) },
+
+	"blake3": func() hash.Hash { return keyedHashGen2(blake3.NewKeyed) },
+}
+
+func keyedHashGen1(hg func(key []byte) (hash.Hash, error)) hash.Hash {
+	var zeroes [32]byte
+	h, err := hg(zeroes[:])
+	if err != nil {
+		panic(fmt.Sprintf("%v: %s", hg, err))
+	}
+	return h
+}
+
+func keyedHashGen2(hg func(key []byte) (*blake3.Hasher, error)) hash.Hash {
+	var zeroes [32]byte
+	h, err := hg(zeroes[:])
+	if err != nil {
+		panic(fmt.Sprintf("%v: %s", hg, err))
+	}
+	return h
 }
 
 func usage(c int) {
