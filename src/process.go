@@ -17,10 +17,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
-	"github.com/opencoff/go-utils"
 	"github.com/opencoff/go-walk"
 	"hash"
 	"runtime"
@@ -120,30 +120,12 @@ func processChan(wch chan walk.Result, errch chan error, h func() hash.Hash, fd 
 
 func worker(ch chan walk.Result, errch chan error, h func() hash.Hash, out io.Writer) {
 	for r := range ch {
-		if err := hashFile(r, h, out); err != nil {
+		sum, sz, err := hashFile(r.Path, h)
+		if err != nil {
 			errch <- err
+		} else {
+			fn := strconv.Quote(r.Path)
+			fmt.Fprintf(out, "%x|%d|%s\n", sum, sz, fn)
 		}
 	}
-}
-
-func hashFile(r walk.Result, hgen func() hash.Hash, out io.Writer) error {
-	fd, err := os.Open(r.Path)
-	if err != nil {
-		return err
-	}
-	defer fd.Close()
-
-	h := hgen()
-	if h == nil {
-		panic(fmt.Sprintf("nil hash!"))
-	}
-	sz, err := utils.MmapReader(fd, 0, 0, h)
-	if err != nil {
-		return err
-	}
-
-	sum := h.Sum(nil)[:]
-
-	_, err = fmt.Fprintf(out, "%x %d '%s'\n", sum, sz, r.Path)
-	return err
 }

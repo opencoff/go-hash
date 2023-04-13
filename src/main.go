@@ -32,7 +32,7 @@ import (
 )
 
 // ghash output file magic
-const MAGIC = "#! ghash"
+const MAGIC = "#!ghash"
 
 // basename of argv[0]
 var Z string = path.Base(os.Args[0])
@@ -69,14 +69,14 @@ func main() {
 		os.Exit(0)
 	}
 
-	args := mf.Args()
-	if len(args) < 1 {
-		Die("Insufficient arguments. Try '%s -h'", Z)
-	}
-
 	if len(verify) > 0 {
 		doVerify(verify)
 		os.Exit(0)
+	}
+
+	args := mf.Args()
+	if len(args) < 1 {
+		Die("Insufficient arguments. Try '%s -h'", Z)
 	}
 
 	h, ok := Hashes[halgo]

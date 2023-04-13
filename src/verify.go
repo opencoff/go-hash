@@ -14,18 +14,22 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
+	"hash"
 	"io"
 	"os"
-	/*
-		"fmt"
-		"sync"
-		"strings"
+	"strconv"
+	"strings"
+	"sync"
 
-		"github.com/opencoff/go-walk"
-		"github.com/opencoff/go-utils"
-		"hash"
-		"runtime"
-	*/)
+	"crypto/subtle"
+)
+
+type datum struct {
+	line      string
+	errPrefix string
+}
 
 func doVerify(nm string) {
 	var fd io.ReadCloser = os.Stdin
@@ -39,69 +43,49 @@ func doVerify(nm string) {
 
 	defer fd.Close()
 
-	rd := bufio.NewReader(fd)
-	line, tooLong, err := rd.ReadLine()
-	if toolong {
-		Die("%s: possibly corrupt; first line too long", nm)
+	rd := bufio.NewScanner(fd)
+	if ok := rd.Scan(); !ok {
+		Die("%s: possibly corrupt; can't read first line", nm)
 	}
 
-	if err != nil {
-		Die("%s: %s", nm, err)
+	subs := strings.Split(rd.Text(), " ")
+	if len(subs) < 3 {
+		Die("%s: possibly corrupt; not enough fields in header", nm)
 	}
 
-	line := string(line)
-	want := len(MAGIC)
-	if len(line) < want  || line[:want] != MAGIC {
+	magic := subs[0]
+	if magic != MAGIC {
 		Die("%s: Not a ghash file", nm)
 	}
 
-	line = line[want:]
-	subs := strings.Split(line, " ")
-	if len(subs) < 2 {
-		Die("%s: Corrupted ghash file", nm)
-	}
-
-	hgen, ok := Hashes[subs[0]]
+	halgo := subs[1]
+	hgen, ok := Hashes[halgo]
 	if !ok {
-		Die("%s: unsupported hash algo %s", subs[0])
+		Die("%s: unsupported hash algo '%s'", nm, halgo)
 	}
-
 
 	// start workers
 	var wg sync.WaitGroup
 
 	wg.Add(nWorkers)
 
-	type datum struct {
-		line string
-		errPrefix string
-	}
 	ch := make(chan datum, nWorkers)
 	errch := make(chan error, 1)
 
 	for i := 0; i < nWorkers; i++ {
 		go func() {
-			worker(ch, errch)
+			verifyWorker(ch, errch, hgen)
 			wg.Done()
-		}
+		}()
 	}
 
 	// feed the rest of the lines
 	go func() {
 		num := 2
-		for ;; num++{
-			line, tooLong, err := rd.ReadLine()
-			if toolong {
-				errch <- fmt.Errorf("%s: %d: line too long; skipped.", nm, num)
-				continue
-			}
-
-			if err != nil {
-				errch <- fmt.Errorf("%s: %d: %s", nm, num, err)
-				continue
-			}
-			ch <- datum{line: line, errPrefix: fmt.Sprintf("%s: %d", nm, num)}
+		for ; rd.Scan(); num++ {
+			ch <- datum{line: rd.Text(), errPrefix: fmt.Sprintf("%s: %d", nm, num)}
 		}
+		close(ch)
 	}()
 
 	// harvest errors
@@ -122,15 +106,63 @@ func doVerify(nm string) {
 	}
 }
 
-
-func worker(ch chan datum, errch chan error) {
+// worker goroutine to verify files
+func verifyWorker(ch chan datum, errch chan error, hgen func() hash.Hash) {
 	for d := range ch {
-		line := d.line
-		i := strings.Index(line, " ")
-		if i < 0 {
-			errch <- fmt.Errorf("%s: malformed line; no hash", d.errPrefix)
-			continue
+		if err := verifyFile(d, hgen); err != nil {
+			errch <- err
 		}
-		hash := line[:i]
 	}
+}
+
+func verifyFile(d datum, hgen func() hash.Hash) error {
+	line := d.line
+
+	// fields are separated by '|'
+	// field-1: hash
+	// field-2: file size
+	// field-3: quoted file name
+	subs := strings.Split(line, "|")
+	if len(subs) < 3 {
+		return fmt.Errorf("%s: malformed line; not enough fields", d.errPrefix)
+	}
+
+	wantHash := subs[0]
+	sz, err := strconv.ParseInt(subs[1], 10, 64)
+	if err != nil {
+		return fmt.Errorf("%s: malformed line; size %s", d.errPrefix, err)
+	}
+
+	fn, err := strconv.Unquote(subs[2])
+	if err != nil {
+		return fmt.Errorf("%s: malformed line; filename %s", d.errPrefix, err)
+	}
+
+	// now we verify the file
+	fi, err := os.Stat(fn)
+	if err != nil {
+		return fmt.Errorf("%s: %s", d.errPrefix, err)
+	}
+
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("%s: '%s' not a file", d.errPrefix, fn)
+	}
+
+	if fi.Size() != sz {
+		return fmt.Errorf("%s: '%s' size mismatch: exp %d, saw %d",
+			d.errPrefix, fn, sz, fi.Size())
+	}
+
+	// finally we can hash and compare
+	sum, _, err := hashFile(fn, hgen)
+	if err != nil {
+		return fmt.Errorf("%s: can't hash: %s", d.errPrefix, err)
+	}
+
+	haveHash := fmt.Sprintf("%x", sum)
+	if subtle.ConstantTimeCompare([]byte(haveHash), []byte(wantHash)) != 1 {
+		return fmt.Errorf("%s: file modified '%s'", d.errPrefix, fn)
+	}
+
+	return nil
 }
