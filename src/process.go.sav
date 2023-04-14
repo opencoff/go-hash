@@ -43,45 +43,16 @@ func processRecursive(args []string, h func() hash.Hash, fd io.Writer, opt *walk
 
 	walkCh, errch := walk.Walk(args, walk.FILE, opt)
 
-	out := make(chan walk.Result, nWorkers)
 	err2 := make(chan error, 1)
+	out := make(chan walk.Result, nWorkers)
 
-	go func(in chan walk.Result, out chan walk.Result, errch chan error) {
-		for w := range in {
-			nm := w.Path
-			fi := w.Stat
-			m := fi.Mode()
-
-			// if we're following symlinks, update fi & m
-			if (m&os.ModeSymlink) > 0 {
-				if !opt.FollowSymlinks {
-					errch <- fmt.Errorf("skipping symlink %s", nm)
-					continue
-				}
-
-				if fi, err = os.Stat(nm); err != nil {
-					errch <- fmt.Errorf("stat %s: %w", nm, err)
-					continue
-				}
-
-				m = fi.Mode()
-			}
-
-			switch {
-			case m.IsDir():
-				// XXX Add code to readlin() and create correct path to descend.
-				panic("fix me")
-
-			case m.IsRegular():
-				out <- walk.Result{Path: nm, Stat: fi}
-
-			default:
-				errch <- fmt.Errorf("skipping non-file %s..", nm)
+	go func() {
+		for w := range walkCh {
+			if filterEntry(w.Path, w.Stat) {
+				out <- e
 			}
 		}
-		close(out)
-
-	}(walkCh, out, err2)
+	}()
 
 	go func() {
 		for e := range errch {
@@ -93,19 +64,16 @@ func processRecursive(args []string, h func() hash.Hash, fd io.Writer, opt *walk
 	processChan(walkCh, err2, h, fd)
 }
 
+func filterEntry(nm string, fi os.FileInfo, errch chan error) bool {
+}
 
+func filterTree(in chan walk.Result, errch chan error) chan walk.Result {
+	out := make(chan walk.Result, nWorkers)
 
-
-// iterate over the names
-func processNormal(args []string, h func() hash.Hash, fd io.Writer, followSymlinks bool) {
-	ch := make(chan walk.Result, nWorkers)
-	errch := make(chan error, 1)
-
-	// iterate in the background and feed the workers
 	go func() {
-		for _, nm := range args {
-			var fi os.FileInfo
-			var err error
+		for w := range in {
+			nm := w.Path
+			fi := w.Stat
 
 			fi, err = os.Lstat(nm)
 			if err != nil {
@@ -132,19 +100,28 @@ func processNormal(args []string, h func() hash.Hash, fd io.Writer, followSymlin
 
 			switch {
 			case m.IsDir():
-				errch <- fmt.Errorf("skipping dir %s..", nm)
+				Warn("skipping dir %s..", nm)
 
 			case m.IsRegular():
 				ch <- walk.Result{Path: nm, Stat: fi}
 
 			default:
-				errch <- fmt.Errorf("skipping non-file %s..", nm)
+				Warn("skipping non-file %s..", nm)
 			}
 		}
 
 		close(ch)
 	}()
 }
+
+
+// iterate over the names
+func processNormal(args []string, h func() hash.Hash, fd io.Writer, followSymlinks bool) {
+	ch := make(chan walk.Result, nWorkers)
+	errch := make(chan error, 1)
+
+	// iterate in the background and feed the workers
+	// XXX filterTree does what here again?
 
 	// now handle the workers to hash em files; processChan()
 	// closes the error chan.
