@@ -31,7 +31,7 @@ type datum struct {
 	errPrefix string
 }
 
-func doVerify(nm string) {
+func doVerify(nm string) int {
 	var fd io.ReadCloser = os.Stdin
 	if nm != "-" && len(nm) > 0 {
 		fx, err := os.Open(nm)
@@ -73,46 +73,42 @@ func doVerify(nm string) {
 	errch := make(chan error, 1)
 
 	for i := 0; i < nWorkers; i++ {
-		go func() {
-			verifyWorker(ch, errch, hgen)
+		go func(ch chan datum, errch chan error) {
+			for d := range ch {
+				if err := verifyFile(d, hgen); err != nil {
+					errch <- err
+				}
+			}
 			wg.Done()
-		}()
+		}(ch, errch)
 	}
 
 	// feed the rest of the lines
-	go func() {
+	go func(ch chan datum) {
 		num := 2
 		for ; rd.Scan(); num++ {
 			ch <- datum{line: rd.Text(), errPrefix: fmt.Sprintf("%s: %d", nm, num)}
 		}
 		close(ch)
-	}()
+	}(ch)
 
 	// harvest errors
 	var errs []string
-	go func() {
+	go func(errch chan error) {
 		for err := range errch {
 			errs = append(errs, fmt.Sprintf("%s", err))
 		}
-	}()
+	}(errch)
 
 	wg.Wait()
-
-	// this ends the goroutine above
 	close(errch)
 
 	if len(errs) > 0 {
 		Warn("%s", strings.Join(errs, "\n"))
 	}
-}
 
-// worker goroutine to verify files
-func verifyWorker(ch chan datum, errch chan error, hgen func() hash.Hash) {
-	for d := range ch {
-		if err := verifyFile(d, hgen); err != nil {
-			errch <- err
-		}
-	}
+	// return the exit code
+	return 1 & len(errs)
 }
 
 func verifyFile(d datum, hgen func() hash.Hash) error {
@@ -154,9 +150,15 @@ func verifyFile(d datum, hgen func() hash.Hash) error {
 	}
 
 	// finally we can hash and compare
-	sum, _, err := hashFile(fn, hgen)
+	sum, sz, err := hashFile(fn, hgen)
 	if err != nil {
 		return fmt.Errorf("%s: can't hash: %s", d.errPrefix, err)
+	}
+
+	// Account for hashFile() hashing fewer bytes
+	if fi.Size() != sz {
+		return fmt.Errorf("%s: '%s' hash size mismatch: exp %d, saw %d",
+			d.errPrefix, fn, fi.Size(), sz)
 	}
 
 	haveHash := fmt.Sprintf("%x", sum)

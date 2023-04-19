@@ -15,14 +15,12 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"os"
-	"strconv"
-	"strings"
+	"path"
 	"sync"
+	"syscall"
 
 	"github.com/opencoff/go-walk"
-	"hash"
 	"runtime"
 )
 
@@ -30,79 +28,20 @@ const _parallelism int = 2
 
 var nWorkers = runtime.NumCPU() * _parallelism
 
-func processRecursive(args []string, h func() hash.Hash, fd io.Writer, opt *walk.Options) {
-	// both these chans will be closed by walk.Walk().
-	// We can't just hand it off for further writes to processChan();
-	// we need to create a smol goroutine to mirror to a different chan
-	// that can be closed by processChan()
-
-
-	// XXX Bug: symlinks that map to dirs are somehow returned back from Walk despite
-	//	    followLinks being false.
-	//          
-
-	walkCh, errch := walk.Walk(args, walk.FILE, opt)
-
-	out := make(chan walk.Result, nWorkers)
-	err2 := make(chan error, 1)
-
-	go func(in chan walk.Result, out chan walk.Result, errch chan error) {
-		for w := range in {
-			nm := w.Path
-			fi := w.Stat
-			m := fi.Mode()
-
-			// if we're following symlinks, update fi & m
-			if (m&os.ModeSymlink) > 0 {
-				if !opt.FollowSymlinks {
-					errch <- fmt.Errorf("skipping symlink %s", nm)
-					continue
-				}
-
-				if fi, err = os.Stat(nm); err != nil {
-					errch <- fmt.Errorf("stat %s: %w", nm, err)
-					continue
-				}
-
-				m = fi.Mode()
-			}
-
-			switch {
-			case m.IsDir():
-				// XXX Add code to readlin() and create correct path to descend.
-				panic("fix me")
-
-			case m.IsRegular():
-				out <- walk.Result{Path: nm, Stat: fi}
-
-			default:
-				errch <- fmt.Errorf("skipping non-file %s..", nm)
-			}
-		}
-		close(out)
-
-	}(walkCh, out, err2)
-
-	go func() {
-		for e := range errch {
-			err2 <- e
-		}
-	}()
-
-	// give our err2 chan for the workers
-	processChan(walkCh, err2, h, fd)
-}
-
-
-
-
 // iterate over the names
-func processNormal(args []string, h func() hash.Hash, fd io.Writer, followSymlinks bool) {
+func processArgs(args []string, followSymlinks bool, apply func(string, os.FileInfo) error) []error {
+	nw := nWorkers
+	if len(args) < nw {
+		nw = len(args)
+	}
+
 	ch := make(chan walk.Result, nWorkers)
 	errch := make(chan error, 1)
 
 	// iterate in the background and feed the workers
-	go func() {
+	go func(ch chan walk.Result, errch chan error) {
+		var sr symlinkResolver
+
 		for _, nm := range args {
 			var fi os.FileInfo
 			var err error
@@ -116,14 +55,20 @@ func processNormal(args []string, h func() hash.Hash, fd io.Writer, followSymlin
 			m := fi.Mode()
 
 			// if we're following symlinks, update fi & m
-			if (m&os.ModeSymlink) > 0 {
+			if (m & os.ModeSymlink) > 0 {
 				if !followSymlinks {
 					errch <- fmt.Errorf("skipping symlink %s", nm)
 					continue
 				}
 
-				if fi, err = os.Stat(nm); err != nil {
+				nm, fi, err = sr.resolve(nm, fi)
+				if err != nil {
 					errch <- fmt.Errorf("stat %s: %w", nm, err)
+					continue
+				}
+
+				// a nil name means we can skip this entry
+				if nm == "" {
 					continue
 				}
 
@@ -141,28 +86,12 @@ func processNormal(args []string, h func() hash.Hash, fd io.Writer, followSymlin
 				errch <- fmt.Errorf("skipping non-file %s..", nm)
 			}
 		}
-
 		close(ch)
-	}()
-}
+	}(ch, errch)
 
-	// now handle the workers to hash em files; processChan()
-	// closes the error chan.
-	processChan(ch, errch, h, fd)
-}
-
-func processChan(wch chan walk.Result, errch chan error, h func() hash.Hash, fd io.Writer) {
+	// now start workers and process entries
 	var errs []error
 	var wrkWait, errWait sync.WaitGroup
-
-	wrkWait.Add(nWorkers)
-	for i := 0; i < nWorkers; i++ {
-		go func() {
-			worker(wch, errch, h, fd)
-			wrkWait.Done()
-		}()
-	}
-
 
 	errWait.Add(1)
 	go func(ch chan error) {
@@ -172,29 +101,97 @@ func processChan(wch chan walk.Result, errch chan error, h func() hash.Hash, fd 
 		errWait.Done()
 	}(errch)
 
-	wrkWait.Wait()
+	wrkWait.Add(nw)
+	for i := 0; i < nw; i++ {
+		go func(in chan walk.Result, errch chan error) {
+			for r := range in {
+				err := apply(r.Path, r.Stat)
+				if err != nil {
+					errch <- err
+				}
+			}
+			wrkWait.Done()
+		}(ch, errch)
+	}
 
+	wrkWait.Wait()
 	close(errch)
 	errWait.Wait()
 
-	if len(errs) > 0 {
-		var b strings.Builder
-
-		for _, err := range errs {
-			b.WriteString(fmt.Sprintf("%s\n", err))
-		}
-		Die("%s", b.String())
-	}
+	return errs
 }
 
-func worker(ch chan walk.Result, errch chan error, h func() hash.Hash, out io.Writer) {
-	for r := range ch {
-		sum, sz, err := hashFile(r.Path, h)
+type symlinkResolver struct {
+	seen sync.Map
+}
+
+func (s *symlinkResolver) resolve(nm string, fi os.FileInfo) (string, os.FileInfo, error) {
+	const _MaxSymlinks = 100
+
+	orig := nm
+	tries := 0
+	for {
+		ln, err := os.Readlink(nm)
 		if err != nil {
-			errch <- err
-		} else {
-			fn := strconv.Quote(r.Path)
-			fmt.Fprintf(out, "%x|%d|%s\n", sum, sz, fn)
+			return "", nil, fmt.Errorf("readlink %s: %s", nm, err)
 		}
+
+		if path.IsAbs(ln) {
+			nm = ln
+		} else {
+			// update the name with link name
+			// We don't use path.Join() because it strips leading './'
+			dn := path.Dir(nm)
+			newNm := path.Clean(fmt.Sprintf("%s/%s", dn, ln))
+			nm = newNm
+		}
+
+		fi, err := os.Lstat(nm)
+		if err != nil {
+			return "", nil, fmt.Errorf("lstat %s: %s", nm, err)
+		}
+
+		m := fi.Mode()
+		if (m & os.ModeSymlink) > 0 {
+			// This is another symlink - so continue to unravel
+			tries++
+			if tries > _MaxSymlinks {
+				return "", nil, fmt.Errorf("%s: symlink loop", orig)
+			}
+
+			continue
+		}
+
+		// in all other cases, we've reached a non-symlink
+
+		// If we've seen this inode before, we are done.
+		if s.isEntrySeen(nm, fi) || !fi.Mode().IsRegular() {
+			return "", nil, nil
+		}
+
+		return nm, fi, nil
 	}
+
+	return nm, fi, nil
+}
+
+// track this inode to detect loops; return true if we've seen it before
+// false otherwise.
+func (s *symlinkResolver) isEntrySeen(nm string, fi os.FileInfo) bool {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false
+	}
+
+	key := fmt.Sprintf("%d:%d:%d", st.Dev, st.Rdev, st.Ino)
+	x, ok := s.seen.LoadOrStore(key, st)
+	if !ok {
+		return false
+	}
+
+	// This can't fail because we checked it above before storing in the
+	// sync.Map
+	xt := x.(*syscall.Stat_t)
+
+	return xt.Dev == st.Dev && xt.Rdev == st.Rdev && xt.Ino == st.Ino
 }

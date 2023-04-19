@@ -18,6 +18,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"strconv"
 
 	"github.com/opencoff/go-walk"
 	flag "github.com/opencoff/pflag"
@@ -70,8 +71,8 @@ func main() {
 	}
 
 	if len(verify) > 0 {
-		doVerify(verify)
-		os.Exit(0)
+		exit := doVerify(verify)
+		os.Exit(exit)
 	}
 
 	args := mf.Args()
@@ -98,20 +99,39 @@ func main() {
 	}
 
 	fmt.Fprintf(fd, "%s %s %s\n", MAGIC, halgo, ProductVersion)
+
+	action := func(nm string, _ os.FileInfo) error {
+		sum, sz, err := hashFile(nm, h)
+		if err != nil {
+			return err
+		}
+
+		fn := strconv.Quote(nm)
+		_, err = fmt.Fprintf(fd, "%x|%d|%s\n", sum, sz, fn)
+		return err
+	}
+
+	var errs []error
 	switch recurse {
 	case true:
 		opt := walk.Options{
 			FollowSymlinks: follow,
 			OneFS:          onefs,
+			Type:           walk.FILE,
 		}
-		processRecursive(args, h, fd, &opt)
+
+		errs = walk.WalkFunc(args, &opt, action)
 
 	case false:
-		processNormal(args, h, fd, follow)
+		errs = processArgs(args, follow, action)
+	}
+
+	for i := range errs {
+		fmt.Fprintf(os.Stderr, "%s\n", errs[i])
 	}
 
 	fd.Close()
-	os.Exit(0)
+	os.Exit(1 & len(errs))
 }
 
 func printHashes() {
@@ -159,7 +179,7 @@ func usage(c int) {
 
 Usage: %s [options] file|dir [file|dir ..]
 
-Global options:
+Options:
   -h, --help            Show help and exit
   -V, --version         Show version info and exit
   -r, --recurse	        Recursively traverse directories

@@ -22,7 +22,36 @@ where `$HOSTOS` is the host OS where you are building (e.g., openbsd)
 and `$ARCH` is the CPU architecture (e.g., amd64).
 
 ## How do I use it?
+Usage:
 
+	ghash [options] file|dir [file|dir ..]
+
+	Options:
+	  -h, --help            Show help and exit
+	  -V, --version         Show version info and exit
+	  -r, --recurse	        Recursively traverse directories
+	  -x, --one-filesystem  Don't cross file system boundaries
+	  -L, --follow-symlinks Follow symbolic links
+	  -H, --hash=H		Use hash algorithm 'H' [sha256]
+	  --list-hashes		List supported hash algorithms
+	  -v, --verify-from=F   Verify the hashes in file 'F' [stdin]
+	  -o, --output=O        Write output hashes to file 'O' [stdout]
+
+### Hashing individual files
+
+    ghash file1 file2 file3
+
+### Hashing recursively multiple files and dirs
+
+    ghash -r dir1 dir2 file3 file4
+
+### Verifying previously generated hashes
+
+    # first generate and save the hashes
+    ghash -L -x -H blake3 -o /tmp/etc.ghash -r /etc
+
+    # now verify the saved hashes in /tmp/etc.ghash
+    ghash -v /tmp/etc.ghash
 
 ## Licensing Terms
 The tool and code is licensed under the terms of the
