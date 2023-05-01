@@ -16,7 +16,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"path"
+	"path/filepath"
 	"sync"
 	"syscall"
 
@@ -52,6 +52,10 @@ func processArgs(args []string, followSymlinks bool, apply func(string, os.FileI
 				continue
 			}
 
+			if sr.isEntrySeen(nm, fi) {
+				continue
+			}
+
 			m := fi.Mode()
 
 			// if we're following symlinks, update fi & m
@@ -63,7 +67,7 @@ func processArgs(args []string, followSymlinks bool, apply func(string, os.FileI
 
 				nm, fi, err = sr.resolve(nm, fi)
 				if err != nil {
-					errch <- fmt.Errorf("stat %s: %w", nm, err)
+					errch <- fmt.Errorf("%w", nm, err)
 					continue
 				}
 
@@ -126,53 +130,35 @@ type symlinkResolver struct {
 }
 
 func (s *symlinkResolver) resolve(nm string, fi os.FileInfo) (string, os.FileInfo, error) {
-	const _MaxSymlinks = 100
+	newnm, err := filepath.EvalSymlinks(nm)
+	if err != nil {
+		return "", nil, fmt.Errorf("%s: %w", nm, err)
+	}
+	nm = newnm
 
-	orig := nm
-	tries := 0
-	for {
-		ln, err := os.Readlink(nm)
-		if err != nil {
-			return "", nil, fmt.Errorf("readlink %s: %s", nm, err)
-		}
+	// we know this is no longer a symlink
+	fi, err = os.Stat(nm)
+	if err != nil {
+		return "", nil, fmt.Errorf("stat %s: %w", nm, err)
+	}
 
-		if path.IsAbs(ln) {
-			nm = ln
-		} else {
-			// update the name with link name
-			// We don't use path.Join() because it strips leading './'
-			dn := path.Dir(nm)
-			newNm := path.Clean(fmt.Sprintf("%s/%s", dn, ln))
-			nm = newNm
-		}
-
-		fi, err := os.Lstat(nm)
-		if err != nil {
-			return "", nil, fmt.Errorf("lstat %s: %s", nm, err)
-		}
-
-		m := fi.Mode()
-		if (m & os.ModeSymlink) > 0 {
-			// This is another symlink - so continue to unravel
-			tries++
-			if tries > _MaxSymlinks {
-				return "", nil, fmt.Errorf("%s: symlink loop", orig)
-			}
-
-			continue
-		}
-
-		// in all other cases, we've reached a non-symlink
-
-		// If we've seen this inode before, we are done.
-		if s.isEntrySeen(nm, fi) || !fi.Mode().IsRegular() {
-			return "", nil, nil
-		}
-
-		return nm, fi, nil
+	// If we've seen this inode before, we are done.
+	if s.isEntrySeen(nm, fi) || !fi.Mode().IsRegular() {
+		return "", nil, nil
 	}
 
 	return nm, fi, nil
+}
+
+func (s *symlinkResolver) track(nm string, fi os.FileInfo, errch chan error) {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		errch <- fmt.Errorf("%s: can't read stat from FileInfo", nm)
+		return
+	}
+
+	key := fmt.Sprintf("%d:%d:%d", st.Dev, st.Rdev, st.Ino)
+	_, ok = s.seen.LoadOrStore(key, st)
 }
 
 // track this inode to detect loops; return true if we've seen it before
