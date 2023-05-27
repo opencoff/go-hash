@@ -1,13 +1,25 @@
 
+tool := ghash
+
 pwd = $(shell pwd)
+arch := $(shell ./build --print-arch)
+bindir = ./bin/$(arch)
+bin := $(bindir)/$(tool)
 
-.PHONY: all test clean realclean
+INSTALLDIR ?= $(HOME)/bin
+installdir := $(INSTALLDIR)/$(arch)
 
-all:
+
+$(bin):
 	./build -s
 
-test:
-	go test ./sign
+install: $(installdir) $(bin)
+	-cp -f $(bin) $(installdir)/
+
+.PHONY: $(bin) test clean realclean $(installdir) $(INSTALLDIR)
+
+$(installdir):
+	test -d $@ || mkdir -p $@
 
 clean realclean:
 	rm -rf bin

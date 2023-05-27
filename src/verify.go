@@ -27,7 +27,9 @@ import (
 )
 
 type datum struct {
-	line      string
+	file      string
+	size      int64
+	expsum    string
 	errPrefix string
 }
 
@@ -64,14 +66,12 @@ func doVerify(nm string) int {
 		Die("%s: unsupported hash algo '%s'", nm, halgo)
 	}
 
-	// start workers
 	var wg sync.WaitGroup
-
-	wg.Add(nWorkers)
-
 	ch := make(chan datum, nWorkers)
 	errch := make(chan error, 1)
 
+	// start workers that verify the hashes
+	wg.Add(nWorkers)
 	for i := 0; i < nWorkers; i++ {
 		go func(ch chan datum, errch chan error) {
 			for d := range ch {
@@ -83,25 +83,50 @@ func doVerify(nm string) int {
 		}(ch, errch)
 	}
 
-	// feed the rest of the lines
+	// feed the rest of the input file hash-lines
+	wg.Add(1)
 	go func(ch chan datum) {
 		num := 2
 		for ; rd.Scan(); num++ {
-			ch <- datum{line: rd.Text(), errPrefix: fmt.Sprintf("%s: %d", nm, num)}
+			errPref := fmt.Sprintf("%s: %d", nm, num)
+			fn, sz, csum, err := parseLine(rd.Text(), errPref)
+			if err != nil {
+				errch <- err
+				continue
+			}
+
+			ch <- datum{
+				file:      fn,
+				size:      sz,
+				expsum:    csum,
+				errPrefix: errPref,
+			}
+
 		}
 		close(ch)
 	}(ch)
 
-	// harvest errors
 	var errs []string
+	var ewg sync.WaitGroup
+
+	// harvest errors
+	ewg.Add(1)
 	go func(errch chan error) {
 		for err := range errch {
 			errs = append(errs, fmt.Sprintf("%s", err))
 		}
+		ewg.Done()
 	}(errch)
 
+	// don't reorder these:
+	//  - we want to first wait for the workers to complete their hash verification
+	//  - then, we close the error harvestor
+	//  - and finally wait for error harvestor to complete
+	//
+	//  We can't read errs[] until the error harvestor has finished!
 	wg.Wait()
 	close(errch)
+	ewg.Wait()
 
 	if len(errs) > 0 {
 		Warn("%s", strings.Join(errs, "\n"))
@@ -111,59 +136,67 @@ func doVerify(nm string) int {
 	return 1 & len(errs)
 }
 
-func verifyFile(d datum, hgen func() hash.Hash) error {
-	line := d.line
-
+func parseLine(line string, ep string) (fn string, sz int64, csum string, err error) {
 	// fields are separated by '|'
 	// field-1: hash
 	// field-2: file size
 	// field-3: quoted file name
 	subs := strings.Split(line, "|")
 	if len(subs) < 3 {
-		return fmt.Errorf("%s: malformed line; not enough fields", d.errPrefix)
+		err = fmt.Errorf("%s: malformed line; not enough fields", ep)
+		return
 	}
 
 	wantHash := subs[0]
-	sz, err := strconv.ParseInt(subs[1], 10, 64)
+	sz, err = strconv.ParseInt(subs[1], 10, 64)
 	if err != nil {
-		return fmt.Errorf("%s: malformed line; size %s", d.errPrefix, err)
+		err = fmt.Errorf("%s: malformed line; size %w", ep, err)
+		return
 	}
 
-	fn, err := strconv.Unquote(subs[2])
+	fn, err = strconv.Unquote(subs[2])
 	if err != nil {
-		return fmt.Errorf("%s: malformed line; filename %s", d.errPrefix, err)
+		err = fmt.Errorf("%s: malformed line; filename %w", ep, err)
+		return
 	}
 
 	// now we verify the file
 	fi, err := os.Stat(fn)
 	if err != nil {
-		return fmt.Errorf("%s: %s", d.errPrefix, err)
+		err = fmt.Errorf("%s: %w", ep, err)
+		return
 	}
 
 	if !fi.Mode().IsRegular() {
-		return fmt.Errorf("%s: '%s' not a file", d.errPrefix, fn)
+		err = fmt.Errorf("%s: '%s' not a file", ep, fn)
+		return
 	}
 
 	if fi.Size() != sz {
-		return fmt.Errorf("%s: '%s' size mismatch: exp %d, saw %d",
-			d.errPrefix, fn, sz, fi.Size())
+		err = fmt.Errorf("%s: '%s' size mismatch: exp %d, saw %d",
+			ep, fn, sz, fi.Size())
+		return
 	}
 
+	return fn, fi.Size(), wantHash, nil
+}
+
+func verifyFile(d datum, hgen func() hash.Hash) error {
 	// finally we can hash and compare
-	sum, sz, err := hashFile(fn, hgen)
+	sum, sz, err := hashFile(d.file, hgen)
 	if err != nil {
-		return fmt.Errorf("%s: can't hash: %s", d.errPrefix, err)
+		return fmt.Errorf("%s: can't hash: %w", d.errPrefix, err)
 	}
 
 	// Account for hashFile() hashing fewer bytes
-	if fi.Size() != sz {
+	if d.size != sz {
 		return fmt.Errorf("%s: '%s' hash size mismatch: exp %d, saw %d",
-			d.errPrefix, fn, fi.Size(), sz)
+			d.errPrefix, d.file, d.size, sz)
 	}
 
-	haveHash := fmt.Sprintf("%x", sum)
-	if subtle.ConstantTimeCompare([]byte(haveHash), []byte(wantHash)) != 1 {
-		return fmt.Errorf("%s: file modified '%s'", d.errPrefix, fn)
+	csum := fmt.Sprintf("%x", sum)
+	if subtle.ConstantTimeCompare([]byte(csum), []byte(d.expsum)) != 1 {
+		return fmt.Errorf("%s: file modified '%s'", d.errPrefix, d.file)
 	}
 
 	return nil
