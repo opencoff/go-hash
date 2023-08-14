@@ -104,6 +104,7 @@ func doVerify(nm string) int {
 
 		}
 		close(ch)
+		wg.Done()
 	}(ch)
 
 	var errs []string
