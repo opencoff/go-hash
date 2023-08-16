@@ -18,7 +18,6 @@ import (
 	"io"
 	"os"
 	"path"
-	"strconv"
 
 	"github.com/opencoff/go-walk"
 	flag "github.com/opencoff/pflag"
@@ -106,8 +105,7 @@ func main() {
 			return err
 		}
 
-		fn := strconv.Quote(nm)
-		_, err = fmt.Fprintf(fd, "%x|%d|%s\n", sum, sz, fn)
+		_, err = fmt.Fprintf(fd, "%x|%d|%s\n", sum, sz, nm)
 		return err
 	}
 

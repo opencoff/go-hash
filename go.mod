@@ -3,7 +3,7 @@ module github.com/opencoff/go-hash
 go 1.20
 
 require (
-	github.com/opencoff/go-utils v0.5.0
+	github.com/opencoff/go-utils v0.6.1
 	github.com/opencoff/go-walk v0.5.0
 	github.com/opencoff/pflag v1.0.6-sh2
 	github.com/zeebo/blake3 v0.2.3

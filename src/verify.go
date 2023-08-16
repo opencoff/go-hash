@@ -137,49 +137,61 @@ func doVerify(nm string) int {
 	return 1 & len(errs)
 }
 
-func parseLine(line string, ep string) (fn string, sz int64, csum string, err error) {
-	// fields are separated by '|'
-	// field-1: hash
-	// field-2: file size
-	// field-3: quoted file name
-	subs := strings.Split(line, "|")
-	if len(subs) < 3 {
-		err = fmt.Errorf("%s: malformed line; not enough fields", ep)
+func parseLine(line string, errpref string) (fn string, sz int64, csum string, err error) {
+	var i int
+
+	line = strings.TrimSpace(line)
+
+	// Field #1: Checksum
+	i = strings.IndexRune(line, '|')
+	if i < 0 {
+		err = fmt.Errorf("%s: malformed checksum", errpref)
 		return
 	}
 
-	wantHash := subs[0]
-	sz, err = strconv.ParseInt(subs[1], 10, 64)
+	csum, line = line[:i], line[i+1:]
+
+	// Field #2: File size
+	i = strings.IndexRune(line, '|')
+	if i < 0 {
+		err = fmt.Errorf("%s: malformed file size", errpref)
+		return
+	}
+
+	sz, err = strconv.ParseInt(line[:i], 10, 64)
 	if err != nil {
-		err = fmt.Errorf("%s: malformed line; size %w", ep, err)
+		err = fmt.Errorf("%s: malformed line; size %w", errpref, err)
 		return
 	}
 
-	fn, err = strconv.Unquote(subs[2])
-	if err != nil {
-		err = fmt.Errorf("%s: malformed line; filename %w", ep, err)
-		return
+	// everything else is the filename
+	fn = line[i+1:]
+	if fn[0] == '"' {
+		fn, err = strconv.Unquote(fn)
+		if err != nil {
+			err = fmt.Errorf("%s: malformed line; filename %w", errpref, err)
+			return
+		}
 	}
 
-	// now we verify the file
 	fi, err := os.Stat(fn)
 	if err != nil {
-		err = fmt.Errorf("%s: %w", ep, err)
+		err = fmt.Errorf("%s: %w", errpref, err)
 		return
 	}
 
 	if !fi.Mode().IsRegular() {
-		err = fmt.Errorf("%s: '%s' not a file", ep, fn)
+		err = fmt.Errorf("%s: '%s' not a file", errpref, fn)
 		return
 	}
 
 	if fi.Size() != sz {
 		err = fmt.Errorf("%s: '%s' size mismatch: exp %d, saw %d",
-			ep, fn, sz, fi.Size())
+			errpref, fn, sz, fi.Size())
 		return
 	}
 
-	return fn, fi.Size(), wantHash, nil
+	return fn, sz, csum, nil
 }
 
 func verifyFile(d datum, hgen func() hash.Hash) error {
@@ -202,3 +214,4 @@ func verifyFile(d datum, hgen func() hash.Hash) error {
 
 	return nil
 }
+

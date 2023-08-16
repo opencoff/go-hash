@@ -1,7 +1,7 @@
 github.com/klauspost/cpuid/v2 v2.0.12 h1:p9dKCg8i4gmOxtv35DvrYoWqYzQrvEVdjQ762Y0OqZE=
 github.com/klauspost/cpuid/v2 v2.0.12/go.mod h1:g2LTdtYhdyuGPqyWyv7qRAmj1WBqxuObKfj5c0PQa7c=
-github.com/opencoff/go-utils v0.5.0 h1:tDcSihmEFngzhCX56aOcHw1+egcK1/Xe+SQlsVRTauk=
-github.com/opencoff/go-utils v0.5.0/go.mod h1:A9Xkw1cIhZKpjAP6tVIUPd7Gfo6mslKyr80/z5QHEw0=
+github.com/opencoff/go-utils v0.6.1 h1:HWPT48e4NtyzNZcYmexsm3hYlX2qmX/URueuBeum7qI=
+github.com/opencoff/go-utils v0.6.1/go.mod h1:A9Xkw1cIhZKpjAP6tVIUPd7Gfo6mslKyr80/z5QHEw0=
 github.com/opencoff/go-walk v0.5.0 h1:RJxlk/6xEj8Fd61/BRFuzfOT30ZiVXgMaqs1MPTf45Q=
 github.com/opencoff/go-walk v0.5.0/go.mod h1:KOaaED4TjMDDPwfweC2HEKFlfysyT2iMI5i2m35mCdA=
 github.com/opencoff/pflag v1.0.6-sh2 h1:Vw3VuG7Z2Cmpev4U3mB16qXYP20RHoxCAlxPOPSpDJU=
