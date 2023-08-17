@@ -143,8 +143,7 @@ func parseLine(line string, errpref string) (fn string, sz int64, csum string, e
 	line = strings.TrimSpace(line)
 
 	// Field #1: Checksum
-	i = strings.IndexRune(line, '|')
-	if i < 0 {
+	if i = strings.IndexRune(line, '|'); i < 0 {
 		err = fmt.Errorf("%s: malformed checksum", errpref)
 		return
 	}
@@ -152,30 +151,27 @@ func parseLine(line string, errpref string) (fn string, sz int64, csum string, e
 	csum, line = line[:i], line[i+1:]
 
 	// Field #2: File size
-	i = strings.IndexRune(line, '|')
-	if i < 0 {
+	if i = strings.IndexRune(line, '|'); i < 0 {
 		err = fmt.Errorf("%s: malformed file size", errpref)
 		return
 	}
 
-	sz, err = strconv.ParseInt(line[:i], 10, 64)
-	if err != nil {
+	if sz, err = strconv.ParseInt(line[:i], 10, 64); err != nil {
 		err = fmt.Errorf("%s: malformed line; size %w", errpref, err)
 		return
 	}
 
 	// everything else is the filename
-	fn = line[i+1:]
-	if fn[0] == '"' {
-		fn, err = strconv.Unquote(fn)
-		if err != nil {
+	if fn = line[i+1:]; fn[0] == '"' {
+		if fn, err = strconv.Unquote(fn); err != nil {
 			err = fmt.Errorf("%s: malformed line; filename %w", errpref, err)
 			return
 		}
 	}
 
-	fi, err := os.Stat(fn)
-	if err != nil {
+	var fi os.FileInfo
+
+	if fi, err = os.Stat(fn); err != nil {
 		err = fmt.Errorf("%s: %w", errpref, err)
 		return
 	}
@@ -214,4 +210,3 @@ func verifyFile(d datum, hgen func() hash.Hash) error {
 
 	return nil
 }
-
