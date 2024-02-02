@@ -110,13 +110,13 @@ func main() {
 
 	var wg sync.WaitGroup
 	ch := make(chan otuple, 16)
-	action := func(nm string, _ os.FileInfo) error {
-		sum, sz, err := hashFile(nm, h)
+	action := func(r walk.Result) error {
+		sum, sz, err := hashFile(r.Path, h)
 		if err != nil {
 			return err
 		}
 
-		ch <- otuple{nm, sz, sum}
+		ch <- otuple{r.Path, sz, sum}
 		return nil
 	}
 

@@ -29,7 +29,7 @@ const _parallelism int = 2
 var nWorkers = runtime.NumCPU() * _parallelism
 
 // iterate over the names
-func processArgs(args []string, followSymlinks bool, apply func(string, os.FileInfo) error) []error {
+func processArgs(args []string, followSymlinks bool, apply func(r walk.Result) error) []error {
 	nw := nWorkers
 	if len(args) < nw {
 		nw = len(args)
@@ -109,7 +109,7 @@ func processArgs(args []string, followSymlinks bool, apply func(string, os.FileI
 	for i := 0; i < nw; i++ {
 		go func(in chan walk.Result, errch chan error) {
 			for r := range in {
-				err := apply(r.Path, r.Stat)
+				err := apply(r)
 				if err != nil {
 					errch <- err
 				}
