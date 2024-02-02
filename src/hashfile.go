@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/opencoff/go-utils"
+	"github.com/opencoff/go-mmap"
 	"hash"
 )
 
@@ -33,7 +33,11 @@ func hashFile(fn string, hgen func() hash.Hash) ([]byte, int64, error) {
 	if h == nil {
 		panic(fmt.Sprintf("nil hash!"))
 	}
-	sz, err := utils.MmapReader(fd, 0, 0, h)
+
+	sz, err := mmap.Reader(fd, func(b []byte) error {
+		h.Write(b)
+		return nil
+	})
 	if err != nil {
 		return nil, 0, err
 	}

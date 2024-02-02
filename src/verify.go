@@ -89,19 +89,13 @@ func doVerify(nm string) int {
 		num := 2
 		for ; rd.Scan(); num++ {
 			errPref := fmt.Sprintf("%s: %d", nm, num)
-			fn, sz, csum, err := parseLine(rd.Text(), errPref)
+			d, err := parseLine(rd.Text(), errPref)
 			if err != nil {
 				errch <- err
 				continue
 			}
 
-			ch <- datum{
-				file:      fn,
-				size:      sz,
-				expsum:    csum,
-				errPrefix: errPref,
-			}
-
+			ch <- d
 		}
 		close(ch)
 		wg.Done()
@@ -137,15 +131,19 @@ func doVerify(nm string) int {
 	return 1 & len(errs)
 }
 
-func parseLine(line string, errpref string) (fn string, sz int64, csum string, err error) {
+func parseLine(line string, errpref string) (datum, error) {
 	var i int
+	var d datum
+	var err error
+	var sz int64
+	var fn, csum string
 
 	line = strings.TrimSpace(line)
 
 	// Field #1: Checksum
 	if i = strings.IndexRune(line, '|'); i < 0 {
 		err = fmt.Errorf("%s: malformed checksum", errpref)
-		return
+		return d, err
 	}
 
 	csum, line = line[:i], line[i+1:]
@@ -153,19 +151,19 @@ func parseLine(line string, errpref string) (fn string, sz int64, csum string, e
 	// Field #2: File size
 	if i = strings.IndexRune(line, '|'); i < 0 {
 		err = fmt.Errorf("%s: malformed file size", errpref)
-		return
+		return d, err
 	}
 
 	if sz, err = strconv.ParseInt(line[:i], 10, 64); err != nil {
 		err = fmt.Errorf("%s: malformed line; size %w", errpref, err)
-		return
+		return d, err
 	}
 
 	// everything else is the filename
 	if fn = line[i+1:]; fn[0] == '"' {
 		if fn, err = strconv.Unquote(fn); err != nil {
 			err = fmt.Errorf("%s: malformed line; filename %w", errpref, err)
-			return
+			return d, err
 		}
 	}
 
@@ -173,21 +171,26 @@ func parseLine(line string, errpref string) (fn string, sz int64, csum string, e
 
 	if fi, err = os.Stat(fn); err != nil {
 		err = fmt.Errorf("%s: %w", errpref, err)
-		return
+		return d, err
 	}
 
 	if !fi.Mode().IsRegular() {
 		err = fmt.Errorf("%s: '%s' not a file", errpref, fn)
-		return
+		return d, err
 	}
 
 	if fi.Size() != sz {
 		err = fmt.Errorf("%s: '%s' size mismatch: exp %d, saw %d",
 			errpref, fn, sz, fi.Size())
-		return
+		return d, err
 	}
 
-	return fn, sz, csum, nil
+	d = datum{
+		file: fn,
+		size: sz,
+		expsum: csum,
+	}
+	return d, nil
 }
 
 func verifyFile(d datum, hgen func() hash.Hash) error {

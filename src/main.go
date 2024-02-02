@@ -18,9 +18,11 @@ import (
 	"io"
 	"os"
 	"path"
+	"sync"
 
 	"github.com/opencoff/go-walk"
 	flag "github.com/opencoff/pflag"
+	"github.com/opencoff/go-utils"
 
 	"crypto/sha256"
 	"crypto/sha512"
@@ -36,6 +38,12 @@ const MAGIC = "#!ghash"
 
 // basename of argv[0]
 var Z string = path.Base(os.Args[0])
+
+type otuple struct {
+	nm string
+	sz int64
+	sum []byte
+}
 
 func main() {
 	var ver, help, recurse, onefs, follow, force bool
@@ -57,7 +65,7 @@ func main() {
 
 	if ver {
 		fmt.Printf("%s - %s [%s; %s]\n", Z, ProductVersion, RepoVersion, Buildtime)
-		os.Exit(0)
+		Exit(0)
 	}
 
 	if help {
@@ -66,12 +74,12 @@ func main() {
 
 	if listHashes {
 		printHashes()
-		os.Exit(0)
+		Exit(0)
 	}
 
 	if len(verify) > 0 {
 		exit := doVerify(verify)
-		os.Exit(exit)
+		Exit(exit)
 	}
 
 	args := mf.Args()
@@ -87,7 +95,7 @@ func main() {
 	var fd io.WriteCloser = os.Stdout
 
 	if len(output) > 0 {
-		fx, err := NewSafeFile(output, force, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+		fx, err := utils.NewSafeFile(output, force, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 		if err != nil {
 			Die("%s", err)
 		}
@@ -99,15 +107,32 @@ func main() {
 
 	fmt.Fprintf(fd, "%s %s %s\n", MAGIC, halgo, ProductVersion)
 
+
+	var wg sync.WaitGroup
+	ch := make(chan otuple, 16)
 	action := func(nm string, _ os.FileInfo) error {
 		sum, sz, err := hashFile(nm, h)
 		if err != nil {
 			return err
 		}
 
-		_, err = fmt.Fprintf(fd, "%x|%d|%s\n", sum, sz, nm)
-		return err
+		ch <- otuple{nm, sz, sum}
+		return nil
 	}
+
+	wg.Add(1)
+	go func(ch chan otuple, fd io.WriteCloser, wg *sync.WaitGroup) {
+		defer wg.Done()
+		for o := range ch {
+			_, err := fmt.Fprintf(fd, "%x|%d|%s\n", o.sum, o.sz, o.nm)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%s\n", err)
+				return
+			}
+		}
+		fd.Close()
+	}(ch, fd, &wg)
+
 
 	var errs []error
 	switch recurse {
@@ -124,12 +149,14 @@ func main() {
 		errs = processArgs(args, follow, action)
 	}
 
+	close(ch)
+
 	for i := range errs {
 		fmt.Fprintf(os.Stderr, "%s\n", errs[i])
 	}
 
-	fd.Close()
-	os.Exit(1 & len(errs))
+	wg.Wait()
+	Exit(1 & len(errs))
 }
 
 func printHashes() {
@@ -190,7 +217,7 @@ Options:
 `, Z, Z)
 
 	os.Stdout.Write([]byte(x))
-	os.Exit(c)
+	Exit(c)
 }
 
 // This will be filled in by "build"
