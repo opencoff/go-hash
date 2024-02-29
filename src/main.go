@@ -95,7 +95,11 @@ func main() {
 	var fd io.WriteCloser = os.Stdout
 
 	if len(output) > 0 {
-		fx, err := utils.NewSafeFile(output, force, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+		var opt uint32
+		if force {
+			opt |= utils.OPT_OVERWRITE
+		}
+		fx, err := utils.NewSafeFile(output, opt, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 		if err != nil {
 			Die("%s", err)
 		}
